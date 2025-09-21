@@ -2,12 +2,18 @@
   "model_name": "naver-clova-ix/donut-base",
   "output_root": "results",
   "seed": 42,
-  "split": {
-    "train_ratio": 0.8,
-    "valid_ratio": 0.1,
-    "test_ratio": 0.1,
-    "shuffle": true,
-    "stratify": false
+  "tokenizer": {
+    "task_prompt": "",
+    "additional_special_tokens": []
+  },
+  "data": {
+    "train_jsonl": "data/train_dataset.jsonl",
+    "valid_jsonl": "data/validation_dataset.jsonl",
+    "test_jsonl": "data/test_dataset.jsonl",
+    "image_root": null,
+    "image_cache_dir": "data/image_cache",
+    "max_target_length": 384,
+    "download_timeout": 10
   },
   "train": {
     "num_train_epochs": 5,
@@ -17,16 +23,20 @@
     "warmup_steps": 200,
     "weight_decay": 0.01,
     "logging_steps": 10,
+    "evaluation_strategy": "steps",
     "eval_steps": 200,
+    "save_strategy": "steps",
     "save_steps": 200,
     "gradient_accumulation_steps": 1,
-    "fp16": true
+    "load_best_model_at_end": true,
+    "fp16": true,
+    "report_to": [],
+    "save_total_limit": 2,
+    "metric_for_best_model": "exact_match",
+    "greater_is_better": true
   },
-  "data": {
-    "train_csv": "data/train_data.csv",
-    "valid_csv": "data/validation_data.csv",
-    "test_csv": "data/test_data.csv",
-    "image_root": "."
+  "generation": {
+    "max_length": 384,
+    "num_beams": 1
   }
 }
-
