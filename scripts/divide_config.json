@@ -1,0 +1,13 @@
+{
+  "split": {
+    "train_ratio": 0.8,
+    "valid_ratio": 0.1,
+    "test_ratio": 0.1,
+    "shuffle": true,
+    "stratify": false
+  },
+  "seed": 42,
+  "data": {
+    "processed_jsonl": "../data/raw_data/donut_finetune_dataset.jsonl"
+  }
+}
