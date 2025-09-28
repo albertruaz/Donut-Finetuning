@@ -1,7 +1,14 @@
 import argparse
 import json
 import os
-from typing import Any, Dict, Optional
+import sys
+from inspect import signature
+from pathlib import Path
+from typing import Any, Dict, Optional, Set, Tuple
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import numpy as np
 import torch
@@ -130,15 +137,66 @@ def initialise_wandb(cfg: Dict[str, Any], paths: RunPaths, logger):
     tags = wandb_cfg.get("tags")
     if tags:
         init_kwargs.setdefault("tags", tags)
+    mode = wandb_cfg.get("mode")
+    if mode:
+        init_kwargs.setdefault("mode", mode)
     init_kwargs.setdefault("dir", paths.run_dir)
     init_kwargs.setdefault("config", cfg)
 
-    run = wandb.init(**init_kwargs)
-    logger.info(
-        "Weights & Biases logging enabled: %s",
-        getattr(run, "url", getattr(run, "name", "<unnamed>")),
-    )
-    return run
+    allow_offline = bool(wandb_cfg.get("allow_offline_fallback", True))
+    suppress_errors = bool(wandb_cfg.get("suppress_errors", True))
+
+    def _init_with_kwargs(kwargs):
+        return wandb.init(**kwargs)
+
+    try:
+        run = _init_with_kwargs(init_kwargs)
+        logger.info(
+            "Weights & Biases logging enabled: %s",
+            getattr(run, "url", getattr(run, "name", "<unnamed>")),
+        )
+        return run
+    except Exception as exc:  # noqa: BLE001 - surface W&B init errors gracefully
+        logger.warning("W&B initialisation failed: %s", exc)
+        if allow_offline and init_kwargs.get("mode", "online") != "offline":
+            logger.warning("Retrying W&B initialisation in offline mode")
+            offline_kwargs = dict(init_kwargs)
+            offline_kwargs["mode"] = "offline"
+            os.environ["WANDB_MODE"] = "offline"
+            try:
+                run = _init_with_kwargs(offline_kwargs)
+                logger.info("W&B offline fallback enabled")
+                return run
+            except Exception as offline_exc:  # noqa: BLE001
+                logger.error("W&B offline fallback failed: %s", offline_exc)
+        if suppress_errors:
+            logger.warning("Disabling W&B logging due to initialisation failure")
+            return None
+        raise
+
+
+def _filter_training_kwargs(
+    kwargs: Dict[str, Any], logger
+) -> Tuple[Dict[str, Any], Set[str]]:
+    try:
+        valid_params = set(signature(Seq2SeqTrainingArguments.__init__).parameters.keys())
+    except (ValueError, TypeError):
+        return kwargs, set()
+
+    filtered = {}
+    dropped: Dict[str, Any] = {}
+    for key, value in kwargs.items():
+        if key in valid_params:
+            filtered[key] = value
+        else:
+            dropped[key] = value
+
+    if dropped:
+        logger.warning(
+            "Dropping unsupported training arguments: %s",
+            ", ".join(sorted(dropped.keys())),
+        )
+    return filtered, set(dropped.keys())
 
 
 def parse_args() -> argparse.Namespace:
@@ -229,36 +287,65 @@ def main(config_path: str) -> None:
         wandb_cfg = cfg.get("wandb", {})
         run_name = wandb_cfg.get("name") or wandb_cfg.get("run_name")
 
-    training_args = Seq2SeqTrainingArguments(
-        output_dir=paths.ckpt_dir,
-        num_train_epochs=train_cfg.get("num_train_epochs", 5),
-        per_device_train_batch_size=train_cfg.get("per_device_train_batch_size", 2),
-        per_device_eval_batch_size=train_cfg.get("per_device_eval_batch_size", 2),
-        learning_rate=train_cfg.get("learning_rate", 5e-5),
-        warmup_steps=train_cfg.get("warmup_steps", 0),
-        weight_decay=train_cfg.get("weight_decay", 0.0),
-        logging_steps=train_cfg.get("logging_steps", 10),
-        evaluation_strategy=train_cfg.get("evaluation_strategy", "steps")
+    training_kwargs: Dict[str, Any] = {
+        "output_dir": paths.ckpt_dir,
+        "num_train_epochs": train_cfg.get("num_train_epochs", 5),
+        "per_device_train_batch_size": train_cfg.get(
+            "per_device_train_batch_size", 2
+        ),
+        "per_device_eval_batch_size": train_cfg.get(
+            "per_device_eval_batch_size", 2
+        ),
+        "learning_rate": train_cfg.get("learning_rate", 5e-5),
+        "warmup_steps": train_cfg.get("warmup_steps", 0),
+        "weight_decay": train_cfg.get("weight_decay", 0.0),
+        "logging_steps": train_cfg.get("logging_steps", 10),
+        "evaluation_strategy": train_cfg.get("evaluation_strategy", "steps")
         if valid_dataset is not None
         else "no",
-        eval_steps=train_cfg.get("eval_steps", 200),
-        save_strategy=train_cfg.get("save_strategy", "steps"),
-        save_steps=train_cfg.get("save_steps", 200),
-        gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 1),
-        load_best_model_at_end=train_cfg.get("load_best_model_at_end", True),
-        fp16=train_cfg.get("fp16", False),
-        report_to=report_to,
-        save_total_limit=train_cfg.get("save_total_limit", 2),
-        logging_dir=paths.logs_dir,
-        seed=seed,
-        predict_with_generate=True,
-        generation_max_length=generation_cfg.get("max_length", max_target_length),
-        generation_num_beams=generation_cfg.get("num_beams", 1),
-        remove_unused_columns=False,
-        metric_for_best_model=metric_for_best_model,
-        greater_is_better=train_cfg.get("greater_is_better", True),
-        run_name=run_name,
-    )
+        "eval_steps": train_cfg.get("eval_steps", 200),
+        "save_strategy": train_cfg.get("save_strategy", "steps"),
+        "save_steps": train_cfg.get("save_steps", 200),
+        "gradient_accumulation_steps": train_cfg.get(
+            "gradient_accumulation_steps", 1
+        ),
+        "load_best_model_at_end": train_cfg.get("load_best_model_at_end", True),
+        "fp16": train_cfg.get("fp16", False),
+        "report_to": report_to,
+        "save_total_limit": train_cfg.get("save_total_limit", 2),
+        "logging_dir": paths.logs_dir,
+        "seed": seed,
+        "predict_with_generate": True,
+        "generation_max_length": generation_cfg.get("max_length", max_target_length),
+        "generation_num_beams": generation_cfg.get("num_beams", 1),
+        "remove_unused_columns": False,
+        "metric_for_best_model": metric_for_best_model,
+        "greater_is_better": train_cfg.get("greater_is_better", True),
+        "run_name": run_name,
+    }
+
+    training_kwargs, dropped_keys = _filter_training_kwargs(training_kwargs, logger)
+
+    if "evaluation_strategy" not in training_kwargs:
+        if train_cfg.get("evaluation_strategy") not in (None, "no") and "evaluation_strategy" in dropped_keys:
+            logger.warning(
+                "Current transformers version does not support evaluation strategy configuration; proceeding without periodic evaluation."
+            )
+        if training_kwargs.get("load_best_model_at_end"):
+            logger.warning(
+                "Disabling load_best_model_at_end because evaluation strategy is unavailable."
+            )
+            training_kwargs["load_best_model_at_end"] = False
+            training_kwargs.pop("metric_for_best_model", None)
+            training_kwargs.pop("greater_is_better", None)
+        if training_kwargs.get("save_strategy") not in (None, "no"):
+            logger.warning(
+                "Setting save_strategy to 'no' because evaluation strategy is unavailable."
+            )
+            training_kwargs["save_strategy"] = "no"
+        training_kwargs.pop("eval_steps", None)
+
+    training_args = Seq2SeqTrainingArguments(**training_kwargs)
 
     trainer = Seq2SeqTrainer(
         model=model,

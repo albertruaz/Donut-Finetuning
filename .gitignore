@@ -1,2 +1,5 @@
 .DS_Store
 /data/
+/results/
+/logs/
+**/__pycache__/

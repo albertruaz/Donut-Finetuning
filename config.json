@@ -42,16 +42,15 @@
   },
   "wandb": {
     "enabled": true,
-    "project": "donut-training",
-    "entity": null,
+    "project": "donut-finetuning",
+    "entity": "vingle",
     "name": null,
-    "group": null,
-    "tags": [
-      "donut",
-      "finetune"
-    ],
-    "notes": "Donut finetuning run",
+    "group": "donut",
+    "tags": ["donut", "finetune", "text-tag"],
+    "notes": "Finetuning Donut for text tag extraction",
     "mode": "online",
+    "allow_offline_fallback": true,
+    "suppress_errors": true,
     "init_kwargs": {}
   }
 }
