@@ -4,13 +4,49 @@ This project fine-tunes [NAVER CLOVA Donut (`naver-clova-ix/donut-base`)](https:
 
 ## Environment Setup
 
+### Prerequisites
+- NVIDIA GPU with CUDA support (recommended for training)
+- CUDA 11.8 or 12.1 compatible drivers
+- Miniconda or Anaconda
+
+### Installation Steps
+
+1. **Create conda environment with Python 3.10 or 3.11:**
+   ```bash
+   conda create -n donut python=3.10 -y
+   conda activate donut
+   ```
+
+2. **Install GPU-enabled PyTorch (CUDA 11.8 version):**
+   ```bash
+   pip install torch==2.7.1+cu118 torchvision==0.22.1+cu118 torchaudio==2.7.1+cu118 --index-url https://download.pytorch.org/whl/cu118
+   ```
+
+   Or for CUDA 12.1:
+   ```bash
+   pip install torch==2.7.1+cu121 torchvision==0.22.1+cu121 torchaudio==2.7.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+   ```
+
+3. **Install remaining dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Verify GPU availability:**
+   ```bash
+   python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'GPU count: {torch.cuda.device_count()}')"
+   ```
+
+### Alternative: CPU-only Installation
+If you don't have a GPU or want to test on CPU:
 ```bash
 conda create -n donut python=3.10 -y
 conda activate donut
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 ```
 
-> **Note:** Training the Donut model requires a GPU for practical runtimes. Set `train.fp16` to `false` in `config.json` if you must train on CPU.
+> **Note:** Training the Donut model requires a GPU for practical runtimes. Set `train.fp16` to `false` in `config.json` if you must train on CPU. CPU training can be 100-1000x slower than GPU training.
 
 ## Data Preparation
 

@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 # 원본 엑셀 파일 경로
-XLSX = Path("../data/raw_data/exported_raw_data.xlsx")
+XLSX = Path("./data/raw_data/exported_raw_data.xlsx")
 
 # 사용할 시트
 TARGET_SHEETS = ["작업 시트_정민", "작업 시트_동환"]

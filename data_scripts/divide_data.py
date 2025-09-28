@@ -197,7 +197,7 @@ def main(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="divide_config.json")
+    ap.add_argument("--config", default="./divide_config.json")
     ap.add_argument(
         "--input",
         default=None,
