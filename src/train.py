@@ -14,7 +14,7 @@ from transformers import (
 )
 
 from src.datasets import DonutDataCollator, DonutJsonlDataset
-from utils.config_manager import load_config, make_run_dirs
+from utils.config_manager import RunPaths, load_config, make_run_dirs
 from utils.logging_utils import setup_logger
 
 
@@ -88,6 +88,59 @@ def maybe_add_special_tokens(processor, model, cfg: Dict[str, Any]) -> None:
             model.decoder.resize_token_embeddings(len(processor.tokenizer))
 
 
+def initialise_wandb(cfg: Dict[str, Any], paths: RunPaths, logger):
+    wandb_cfg = cfg.get("wandb", {})
+    if not wandb_cfg.get("enabled", False):
+        return None
+
+    try:
+        import wandb  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "Weights & Biases logging is enabled in the config but the `wandb` package "
+            "is not installed. Install it with `pip install wandb`."
+        ) from exc
+
+    env_map = {
+        "WANDB_PROJECT": wandb_cfg.get("project"),
+        "WANDB_ENTITY": wandb_cfg.get("entity"),
+        "WANDB_RUN_GROUP": wandb_cfg.get("group"),
+        "WANDB_NOTES": wandb_cfg.get("notes"),
+        "WANDB_MODE": wandb_cfg.get("mode"),
+        "WANDB_TAGS": ",".join(wandb_cfg.get("tags", [])) if wandb_cfg.get("tags") else None,
+        "WANDB_DIR": paths.run_dir,
+    }
+    for key, value in env_map.items():
+        if value:
+            os.environ.setdefault(key, str(value))
+
+    init_kwargs = dict(wandb_cfg.get("init_kwargs", {}))
+    project = wandb_cfg.get("project")
+    if project:
+        init_kwargs.setdefault("project", project)
+    entity = wandb_cfg.get("entity")
+    if entity:
+        init_kwargs.setdefault("entity", entity)
+    name = wandb_cfg.get("name") or wandb_cfg.get("run_name")
+    if name:
+        init_kwargs.setdefault("name", name)
+    group = wandb_cfg.get("group")
+    if group:
+        init_kwargs.setdefault("group", group)
+    tags = wandb_cfg.get("tags")
+    if tags:
+        init_kwargs.setdefault("tags", tags)
+    init_kwargs.setdefault("dir", paths.run_dir)
+    init_kwargs.setdefault("config", cfg)
+
+    run = wandb.init(**init_kwargs)
+    logger.info(
+        "Weights & Biases logging enabled: %s",
+        getattr(run, "url", getattr(run, "name", "<unnamed>")),
+    )
+    return run
+
+
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.json", help="Path to config JSON")
@@ -98,6 +151,9 @@ def main(config_path: str) -> None:
     cfg = load_config(config_path)
     paths = make_run_dirs(cfg["output_root"])
     logger = setup_logger(paths.logs_dir)
+
+    wandb_run = initialise_wandb(cfg, paths, logger)
+    wandb_enabled = wandb_run is not None
 
     seed = int(cfg.get("seed", 42))
     set_seed(seed)
@@ -133,6 +189,8 @@ def main(config_path: str) -> None:
         download_timeout=download_timeout,
     )
     logger.info("Train samples: %d", len(train_dataset))
+    if wandb_run is not None:
+        wandb_run.summary["num_train_samples"] = len(train_dataset)
 
     valid_path = data_cfg.get("valid_jsonl")
     valid_dataset: Optional[DonutJsonlDataset] = None
@@ -147,12 +205,29 @@ def main(config_path: str) -> None:
             download_timeout=download_timeout,
         )
         logger.info("Validation samples: %d", len(valid_dataset))
+        if wandb_run is not None:
+            wandb_run.summary["num_validation_samples"] = len(valid_dataset)
 
     collator = DonutDataCollator(processor)
 
     train_cfg = cfg.get("train", {})
     generation_cfg = cfg.get("generation", {})
     metric_for_best_model = train_cfg.get("metric_for_best_model", "exact_match")
+
+    report_to_cfg = train_cfg.get("report_to")
+    if report_to_cfg is None:
+        report_to = ["wandb"] if wandb_enabled else []
+    elif isinstance(report_to_cfg, str):
+        report_to = [report_to_cfg]
+    else:
+        report_to = list(report_to_cfg)
+        if wandb_enabled and "wandb" not in report_to:
+            report_to.append("wandb")
+
+    run_name = train_cfg.get("run_name")
+    if not run_name:
+        wandb_cfg = cfg.get("wandb", {})
+        run_name = wandb_cfg.get("name") or wandb_cfg.get("run_name")
 
     training_args = Seq2SeqTrainingArguments(
         output_dir=paths.ckpt_dir,
@@ -172,7 +247,7 @@ def main(config_path: str) -> None:
         gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 1),
         load_best_model_at_end=train_cfg.get("load_best_model_at_end", True),
         fp16=train_cfg.get("fp16", False),
-        report_to=train_cfg.get("report_to", []),
+        report_to=report_to,
         save_total_limit=train_cfg.get("save_total_limit", 2),
         logging_dir=paths.logs_dir,
         seed=seed,
@@ -182,6 +257,7 @@ def main(config_path: str) -> None:
         remove_unused_columns=False,
         metric_for_best_model=metric_for_best_model,
         greater_is_better=train_cfg.get("greater_is_better", True),
+        run_name=run_name,
     )
 
     trainer = Seq2SeqTrainer(
@@ -197,7 +273,17 @@ def main(config_path: str) -> None:
     )
 
     logger.info("Starting training for %s", model_name)
-    trainer.train()
+    try:
+        trainer.train()
+    finally:
+        if wandb_run is not None:
+            try:
+                import wandb  # type: ignore
+
+                if wandb.run is not None:
+                    wandb.finish()
+            except ImportError:
+                pass
 
     logger.info("Saving model and processor to %s", paths.model_dir)
     model.save_pretrained(paths.model_dir)
