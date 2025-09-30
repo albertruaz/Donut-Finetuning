@@ -1,0 +1,14 @@
+python -m src.train --config config.json
+taskkill /F /PID ~~~
+.\train_scripts\run_background.ps1
+Get-Content "train_scripts\training_log.txt" -Wait
+
+
+$pid = Get-Content "train_scripts\training.pid"
+Stop-Process -Id $pid -Force
+
+# 모든 Python 프로세스 종료
+Get-Process python* | Stop-Process -Force
+
+# 또는 특정 conda 환경의 Python만
+Get-Process | Where-Object {$_.Path -like "*donut*python*"} | Stop-Process -Force
