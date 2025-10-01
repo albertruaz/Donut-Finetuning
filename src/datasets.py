@@ -19,7 +19,14 @@ def _read_jsonl(path: str) -> List[Dict[str, Any]]:
             line = line.strip()
             if not line:
                 continue
-            records.append(json.loads(line))
+            try:
+                # NaN 값을 null로 치환하여 JSON 파싱 오류 방지
+                line = line.replace(": NaN", ": null").replace(":NaN", ":null")
+                record = json.loads(line)
+                records.append(record)
+            except json.JSONDecodeError as e:
+                print(f"Warning: Skipping malformed JSON line: {line[:100]}... Error: {e}")
+                continue
     return records
 
 

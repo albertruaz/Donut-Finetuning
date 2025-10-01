@@ -29,6 +29,8 @@ def _safe_json_loads(text: str) -> Any:
     if not text:
         return {}
     try:
+        # NaN 값을 null로 치환
+        text = text.replace(": NaN", ": null").replace(":NaN", ":null")
         return json.loads(text)
     except json.JSONDecodeError:
         return text
@@ -44,43 +46,103 @@ def build_compute_metrics(processor, prompt: str):
     pad_token_id = processor.tokenizer.pad_token_id
 
     def compute_metrics(eval_preds):
-        predictions, labels = eval_preds
-        if isinstance(predictions, tuple):
-            predictions = predictions[0]
+        try:
+            print(f"[VALIDATION DEBUG] Starting compute_metrics")
+            
+            # GPU 메모리 정리
+            torch.cuda.empty_cache()
+            print(f"[VALIDATION DEBUG] GPU Memory after cache clear: {torch.cuda.memory_allocated() / 1024**3:.2f}GB / {torch.cuda.memory_reserved() / 1024**3:.2f}GB")
+            
+            predictions, labels = eval_preds
+            print(f"[VALIDATION DEBUG] Predictions shape: {predictions.shape if hasattr(predictions, 'shape') else type(predictions)}")
+            print(f"[VALIDATION DEBUG] Labels shape: {labels.shape if hasattr(labels, 'shape') else type(labels)}")
+            
+            if isinstance(predictions, tuple):
+                predictions = predictions[0]
+                print(f"[VALIDATION DEBUG] Extracted predictions shape: {predictions.shape}")
 
-        decoded_preds = processor.batch_decode(predictions, skip_special_tokens=True)
-        labels = np.where(labels != -100, labels, pad_token_id)
-        decoded_labels = processor.batch_decode(labels, skip_special_tokens=True)
+            print(f"[VALIDATION DEBUG] Starting batch decode...")
+            
+            # 음수 토큰 ID 처리 - predictions에서 음수값들을 패드 토큰으로 변경
+            predictions_clean = np.where(predictions < 0, pad_token_id, predictions)
+            print(f"[VALIDATION DEBUG] Cleaned predictions shape: {predictions_clean.shape}")
+            print(f"[VALIDATION DEBUG] Predictions min/max: {predictions_clean.min()}/{predictions_clean.max()}")
+            
+            decoded_preds = processor.batch_decode(predictions_clean, skip_special_tokens=True)
+            print(f"[VALIDATION DEBUG] Decoded {len(decoded_preds)} predictions")
+            
+            labels = np.where(labels != -100, labels, pad_token_id)
+            print(f"[VALIDATION DEBUG] Labels shape after cleaning: {labels.shape}")
+            print(f"[VALIDATION DEBUG] Labels min/max: {labels.min()}/{labels.max()}")
+            
+            decoded_labels = processor.batch_decode(labels, skip_special_tokens=True)
+            print(f"[VALIDATION DEBUG] Decoded {len(decoded_labels)} labels")
 
-        decoded_preds = [_strip_prompt(pred.strip(), prompt) for pred in decoded_preds]
-        decoded_labels = [_strip_prompt(label.strip(), prompt) for label in decoded_labels]
+            decoded_preds = [_strip_prompt(pred.strip(), prompt) for pred in decoded_preds]
+            decoded_labels = [_strip_prompt(label.strip(), prompt) for label in decoded_labels]
 
-        pred_objs = [_safe_json_loads(pred) for pred in decoded_preds]
-        label_objs = [_safe_json_loads(label) for label in decoded_labels]
+            print(f"[VALIDATION DEBUG] Starting JSON parsing...")
+            pred_objs = [_safe_json_loads(pred) for pred in decoded_preds]
+            label_objs = [_safe_json_loads(label) for label in decoded_labels]
+            print(f"[VALIDATION DEBUG] Parsed {len(pred_objs)} predictions and {len(label_objs)} labels")
 
-        total = len(pred_objs)
-        exact = 0
-        field_totals: Dict[str, int] = {}
-        field_correct: Dict[str, int] = {}
+            total = len(pred_objs)
+            exact = 0
+            field_totals: Dict[str, int] = {}
+            field_correct: Dict[str, int] = {}
 
-        for pred, gold in zip(pred_objs, label_objs):
-            if isinstance(pred, dict) and isinstance(gold, dict):
-                if pred == gold:
-                    exact += 1
-                keys = set(pred.keys()) | set(gold.keys())
-                for key in keys:
-                    field_totals[key] = field_totals.get(key, 0) + 1
-                    if pred.get(key, "") == gold.get(key, ""):
-                        field_correct[key] = field_correct.get(key, 0) + 1
-            else:
-                if pred == gold:
-                    exact += 1
+            for pred, gold in zip(pred_objs, label_objs):
+                try:
+                    if isinstance(pred, dict) and isinstance(gold, dict):
+                        if pred == gold:
+                            exact += 1
+                        keys = set(pred.keys()) | set(gold.keys())
+                        for key in keys:
+                            field_totals[key] = field_totals.get(key, 0) + 1
+                            pred_val = pred.get(key, "")
+                            gold_val = gold.get(key, "")
+                            # None 값들을 빈 문자열로 처리
+                            if pred_val is None:
+                                pred_val = ""
+                            if gold_val is None:
+                                gold_val = ""
+                            if pred_val == gold_val:
+                                field_correct[key] = field_correct.get(key, 0) + 1
+                    else:
+                        if pred == gold:
+                            exact += 1
+                except Exception as e:
+                    # 개별 샘플 처리 오류는 건너뛰기
+                    print(f"Warning: Error processing sample: {e}")
+                    continue
 
-        metrics: Dict[str, float] = {}
-        metrics["exact_match"] = exact / total if total else 0.0
-        for key in field_totals:
-            metrics[f"acc_{key}"] = field_correct.get(key, 0) / field_totals[key]
-        return metrics
+            metrics: Dict[str, float] = {}
+            metrics["exact_match"] = exact / total if total else 0.0
+            for key in field_totals:
+                if field_totals[key] > 0:
+                    metrics[f"acc_{key}"] = field_correct.get(key, 0) / field_totals[key]
+            
+            print(f"[VALIDATION DEBUG] Computed metrics: {metrics}")
+            print(f"[VALIDATION DEBUG] GPU Memory after metrics: {torch.cuda.memory_allocated() / 1024**3:.2f}GB / {torch.cuda.memory_reserved() / 1024**3:.2f}GB")
+            
+            # 메모리 정리
+            torch.cuda.empty_cache()
+            print(f"[VALIDATION DEBUG] GPU Memory after final cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f}GB / {torch.cuda.memory_reserved() / 1024**3:.2f}GB")
+            
+            return metrics
+            
+        except Exception as e:
+            print(f"[VALIDATION ERROR] Error in compute_metrics: {e}")
+            print(f"[VALIDATION ERROR] GPU Memory: {torch.cuda.memory_allocated() / 1024**3:.2f}GB / {torch.cuda.memory_reserved() / 1024**3:.2f}GB")
+            import traceback
+            print(f"[VALIDATION ERROR] Traceback: {traceback.format_exc()}")
+            
+            # 에러 시에도 메모리 정리
+            torch.cuda.empty_cache()
+            print(f"[VALIDATION ERROR] GPU Memory after cleanup: {torch.cuda.memory_allocated() / 1024**3:.2f}GB / {torch.cuda.memory_reserved() / 1024**3:.2f}GB")
+            
+            # 오류 발생 시 기본 메트릭 반환
+            return {"exact_match": 0.0, "error": 1.0}
 
     return compute_metrics
 
@@ -218,7 +280,7 @@ def main(config_path: str) -> None:
     logger.info("Seed fixed to %d", seed)
 
     model_name = cfg["model_name"]
-    processor = DonutProcessor.from_pretrained(model_name)
+    processor = DonutProcessor.from_pretrained(model_name, use_fast=True)
     model = VisionEncoderDecoderModel.from_pretrained(model_name)
 
     maybe_add_special_tokens(processor, model, cfg)
@@ -276,11 +338,15 @@ def main(config_path: str) -> None:
     if report_to_cfg is None:
         report_to = ["wandb"] if wandb_enabled else []
     elif isinstance(report_to_cfg, str):
-        report_to = [report_to_cfg]
+        report_to = [report_to_cfg] if report_to_cfg != "none" else []
     else:
         report_to = list(report_to_cfg)
         if wandb_enabled and "wandb" not in report_to:
             report_to.append("wandb")
+    
+    # WandB 권한 오류 방지를 위해 강제로 비활성화
+    if "none" in str(report_to_cfg).lower():
+        report_to = []
 
     run_name = train_cfg.get("run_name")
     if not run_name:
@@ -300,7 +366,7 @@ def main(config_path: str) -> None:
         "warmup_steps": train_cfg.get("warmup_steps", 0),
         "weight_decay": train_cfg.get("weight_decay", 0.0),
         "logging_steps": train_cfg.get("logging_steps", 10),
-        "evaluation_strategy": train_cfg.get("evaluation_strategy", "steps")
+        "eval_strategy": train_cfg.get("eval_strategy", train_cfg.get("evaluation_strategy", "steps"))
         if valid_dataset is not None
         else "no",
         "eval_steps": train_cfg.get("eval_steps", 200),
@@ -318,6 +384,7 @@ def main(config_path: str) -> None:
         "predict_with_generate": True,
         "generation_max_length": generation_cfg.get("max_length", max_target_length),
         "generation_num_beams": generation_cfg.get("num_beams", 1),
+        "generation_do_sample": False,
         "remove_unused_columns": False,
         "metric_for_best_model": metric_for_best_model,
         "greater_is_better": train_cfg.get("greater_is_better", True),
@@ -326,8 +393,8 @@ def main(config_path: str) -> None:
 
     training_kwargs, dropped_keys = _filter_training_kwargs(training_kwargs, logger)
 
-    if "evaluation_strategy" not in training_kwargs:
-        if train_cfg.get("evaluation_strategy") not in (None, "no") and "evaluation_strategy" in dropped_keys:
+    if "eval_strategy" not in training_kwargs:
+        if train_cfg.get("eval_strategy", train_cfg.get("evaluation_strategy")) not in (None, "no") and "eval_strategy" in dropped_keys:
             logger.warning(
                 "Current transformers version does not support evaluation strategy configuration; proceeding without periodic evaluation."
             )
@@ -346,6 +413,14 @@ def main(config_path: str) -> None:
         training_kwargs.pop("eval_steps", None)
 
     training_args = Seq2SeqTrainingArguments(**training_kwargs)
+    
+    print(f"[TRAINING DEBUG] Training arguments created")
+    print(f"[TRAINING DEBUG] eval_strategy: {training_args.eval_strategy}")
+    print(f"[TRAINING DEBUG] eval_steps: {training_args.eval_steps}")
+    print(f"[TRAINING DEBUG] do_eval: {training_args.do_eval}")
+    print(f"[TRAINING DEBUG] valid_dataset: {valid_dataset is not None}")
+    if valid_dataset:
+        print(f"[TRAINING DEBUG] validation samples: {len(valid_dataset)}")
 
     trainer = Seq2SeqTrainer(
         model=model,
@@ -353,15 +428,34 @@ def main(config_path: str) -> None:
         train_dataset=train_dataset,
         eval_dataset=valid_dataset,
         data_collator=collator,
-        tokenizer=processor.tokenizer,
+        processing_class=processor,
         compute_metrics=build_compute_metrics(processor, task_prompt)
         if valid_dataset is not None
         else None,
     )
+    
+    print(f"[TRAINING DEBUG] Trainer created successfully")
+    print(f"[TRAINING DEBUG] GPU Memory before training: {torch.cuda.memory_allocated() / 1024**3:.2f}GB / {torch.cuda.memory_reserved() / 1024**3:.2f}GB")
 
     logger.info("Starting training for %s", model_name)
     try:
+        print(f"[TRAINING DEBUG] About to start trainer.train()")
+        print(f"[TRAINING DEBUG] GPU Memory: {torch.cuda.memory_allocated() / 1024**3:.2f}GB / {torch.cuda.memory_reserved() / 1024**3:.2f}GB")
+        
+        # Custom training loop with step-by-step logging
+        total_steps = len(train_dataset) * training_args.num_train_epochs // (training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps)
+        print(f"[TRAINING DEBUG] Expected total steps: {total_steps}")
+        print(f"[TRAINING DEBUG] Evaluation will happen at step: {training_args.eval_steps}")
+        
         trainer.train()
+        print(f"[TRAINING DEBUG] Training completed successfully!")
+        
+    except Exception as e:
+        print(f"[TRAINING ERROR] Training failed with error: {e}")
+        print(f"[TRAINING ERROR] GPU Memory: {torch.cuda.memory_allocated() / 1024**3:.2f}GB / {torch.cuda.memory_reserved() / 1024**3:.2f}GB")
+        import traceback
+        print(f"[TRAINING ERROR] Traceback: {traceback.format_exc()}")
+        raise
     finally:
         if wandb_run is not None:
             try:
@@ -375,6 +469,70 @@ def main(config_path: str) -> None:
     logger.info("Saving model and processor to %s", paths.model_dir)
     model.save_pretrained(paths.model_dir)
     processor.save_pretrained(paths.model_dir)
+
+    # Validation 샘플들에 대한 추론 결과 저장
+    if valid_dataset is not None and len(valid_dataset) > 0:
+        logger.info("Generating sample predictions for validation dataset...")
+        try:
+            sample_predictions = []
+            num_samples = min(50, len(valid_dataset))
+            
+            model.eval()
+            with torch.no_grad():
+                for i in range(num_samples):
+                    sample = valid_dataset[i]
+                    original_record = valid_dataset.records[i]  # 원본 데이터 접근
+                    
+                    # Input 준비
+                    pixel_values = sample['pixel_values'].unsqueeze(0).to(model.device)
+                    
+                    # Ground truth
+                    labels = sample['labels']
+                    ground_truth = processor.batch_decode([labels], skip_special_tokens=True)[0]
+                    ground_truth = _strip_prompt(ground_truth.strip(), task_prompt)
+                    
+                    # Image URL 추출
+                    image_url = original_record.get("input", {}).get("image_url", "N/A")
+                    
+                    # 추론 실행
+                    outputs = model.generate(
+                        pixel_values,
+                        max_length=max_target_length,
+                        num_beams=generation_cfg.get("num_beams", 1),
+                        early_stopping=generation_cfg.get("early_stopping", True)
+                    )
+                    
+                    # 예측 결과 디코딩
+                    prediction = processor.batch_decode(outputs, skip_special_tokens=True)[0]
+                    prediction = _strip_prompt(prediction.strip(), task_prompt)
+                    
+                    sample_predictions.append({
+                        "sample_id": i,
+                        "image_url": image_url,
+                        "ground_truth": ground_truth,
+                        "prediction": prediction,
+                        "ground_truth_json": _safe_json_loads(ground_truth),
+                        "prediction_json": _safe_json_loads(prediction)
+                    })
+                    
+                    # 진행률 표시 (10개마다)
+                    if (i + 1) % 10 == 0:
+                        logger.info(f"Processed {i + 1}/{num_samples} validation samples")
+            
+            # 결과를 JSON 파일로 저장
+            predictions_file = os.path.join(paths.run_dir, "validation_samples.json")
+            with open(predictions_file, "w", encoding="utf-8") as f:
+                json.dump(sample_predictions, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"Saved {len(sample_predictions)} validation sample predictions to {predictions_file}")
+            
+        except Exception as e:
+            logger.error(f"Error generating validation samples: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+        finally:
+            # GPU 메모리 정리
+            torch.cuda.empty_cache()
 
     metadata = {
         "config": cfg,

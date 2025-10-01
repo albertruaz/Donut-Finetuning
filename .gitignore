@@ -3,3 +3,6 @@
 /results/
 /logs/
 **/__pycache__/
+/wandb/
+*.pid
+*.log

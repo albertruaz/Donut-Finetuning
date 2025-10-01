@@ -30,6 +30,10 @@ if ($Stop) {
         Stop-Process -Id $trainingPid -Force -ErrorAction SilentlyContinue
         Remove-Item $pidFile -Force
         Write-Host "Training stopped"
+        
+        # GPU 정리 실행
+        Write-Host "Running GPU cleanup..."
+        & "$workDir\train_scripts\clean_gpu.ps1"
     } else {
         Write-Host "No training process found"
     }
@@ -61,8 +65,8 @@ try {
     Write-Host "Logs will be available at WandB dashboard"
     Write-Host ""
     
-    & conda activate donut
-    & python '$workDir\src\train.py' --config '$workDir\config.json'
+    & C:\Users\ML\Miniconda3\Scripts\activate.bat donut
+    & C:\Users\ML\Miniconda3\envs\donut\python.exe '$workDir\src\train.py' --config '$workDir\config.json'
     
     Write-Host ""
     Write-Host "=== Training completed at `$(Get-Date) ==="
@@ -87,5 +91,5 @@ $process.Id | Out-File $pidFile -Encoding UTF8
 
 Write-Host "Training started (PID: $($process.Id))"
 Write-Host "Monitor at: https://wandb.ai/vingle/donut-finetuning"
-Write-Host "Status:     .\run_background.ps1 -Status"
-Write-Host "Stop:       .\run_background.ps1 -Stop"
+Write-Host "Status:     .\train_scripts\run_background.ps1 -Status"
+Write-Host "Stop:       .\train_scripts\run_background.ps1 -Stop"
