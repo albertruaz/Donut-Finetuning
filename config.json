@@ -3,8 +3,8 @@
   "output_root": "results",
   "seed": 42,
   "tokenizer": {
-    "task_prompt": "",
-    "additional_special_tokens": []
+    "task_prompt": "<s_extract_info>",
+    "additional_special_tokens": ["<s_extract_info>"]
   },
   "data": {
     "train_jsonl": "data/train_dataset.jsonl",
@@ -19,7 +19,7 @@
     "num_train_epochs": 8,
     "per_device_train_batch_size": 2,
     "per_device_eval_batch_size": 2,
-    "learning_rate": 3e-5,
+    "learning_rate": 5e-5,
     "warmup_ratio": 0.1,
     "lr_scheduler_type": "cosine",
     "weight_decay": 0.01,
@@ -46,9 +46,13 @@
     "run_name": null
   },
   "generation": {
-    "max_length": 384,
+    "max_length": 128,
     "num_beams": 1,
-    "early_stopping": true
+    "early_stopping": true,
+    "do_sample": false,
+    "pad_token_id": 1,
+    "eos_token_id": 2,
+    "repetition_penalty": 1.1
   },
   "wandb": {
     "enabled": true,

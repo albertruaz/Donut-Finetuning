@@ -161,7 +161,14 @@ class DonutJsonlDataset(Dataset):
             else:
                 normalised[str(key)] = str(value)
 
-        return json.dumps(normalised, ensure_ascii=False)
+        # Clean JSON 문자열 직접 생성 (백슬래시 없는 형태)
+        json_parts = []
+        for key, value in normalised.items():
+            # 값에 따옴표가 있으면 escape 처리
+            escaped_value = value.replace('"', '\\"') if '"' in value else value
+            json_parts.append(f'"{key}": "{escaped_value}"')
+        
+        return "{" + ", ".join(json_parts) + "}"
 
     # ------------------------------------------------------------------
     # public API

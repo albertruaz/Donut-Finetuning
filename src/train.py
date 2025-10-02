@@ -1,7 +1,10 @@
 import argparse
 import json
+import math
 import os
 import sys
+import glob
+import datetime
 from inspect import signature
 from pathlib import Path
 from typing import Any, Dict, Optional, Set, Tuple
@@ -44,6 +47,11 @@ def _strip_prompt(text: str, prompt: str) -> str:
 
 def build_compute_metrics(processor, prompt: str):
     pad_token_id = processor.tokenizer.pad_token_id
+    
+    # step 카운터를 위한 global 변수
+    global validation_step_counter
+    if 'validation_step_counter' not in globals():
+        validation_step_counter = 0
 
     def compute_metrics(eval_preds):
         try:
@@ -124,6 +132,47 @@ def build_compute_metrics(processor, prompt: str):
             
             print(f"[VALIDATION DEBUG] Computed metrics: {metrics}")
             print(f"[VALIDATION DEBUG] GPU Memory after metrics: {torch.cuda.memory_allocated() / 1024**3:.2f}GB / {torch.cuda.memory_reserved() / 1024**3:.2f}GB")
+            
+            # 중간 validation에서도 샘플 저장 (첫 10개만)
+            try:
+                global validation_step_counter
+                validation_step_counter += 1
+                
+                if hasattr(eval_preds, 'step') or True:  # 항상 실행
+                    # 현재 실행 중인 run 폴더 찾기
+                    import glob
+                    run_dirs = glob.glob("results/run_*")
+                    if run_dirs:
+                        latest_run_dir = max(run_dirs, key=os.path.getctime)
+                        
+                        # 간단한 샘플 저장 (첫 10개만, 빠른 처리를 위해)
+                        sample_predictions = []
+                        num_samples = min(10, len(predictions))
+                        
+                        for i in range(num_samples):
+                            pred_text = decoded_preds[i] if i < len(decoded_preds) else ""
+                            label_text = decoded_labels[i] if i < len(decoded_labels) else ""
+                            
+                            sample_predictions.append({
+                                "sample_id": i,
+                                "prediction": pred_text,
+                                "ground_truth": label_text,
+                                "prediction_json": _safe_json_loads(pred_text),
+                                "ground_truth_json": _safe_json_loads(label_text)
+                            })
+                        
+                        # step과 타임스탬프가 포함된 파일명으로 저장
+                        import datetime
+                        timestamp = datetime.datetime.now().strftime("%H%M%S")
+                        step_estimate = validation_step_counter * 200  # eval_steps=200 기준
+                        sample_file = os.path.join(latest_run_dir, f"validation_step{step_estimate:04d}_{timestamp}.json")
+                        
+                        with open(sample_file, "w", encoding="utf-8") as f:
+                            json.dump(sample_predictions, f, ensure_ascii=False, indent=2)
+                        
+                        print(f"[VALIDATION DEBUG] Saved {len(sample_predictions)} samples to {sample_file}")
+            except Exception as e:
+                print(f"[VALIDATION DEBUG] Could not save intermediate samples: {e}")
             
             # 메모리 정리
             torch.cuda.empty_cache()
@@ -486,10 +535,20 @@ def main(config_path: str) -> None:
                     # Input 준비
                     pixel_values = sample['pixel_values'].unsqueeze(0).to(model.device)
                     
-                    # Ground truth
+                    # Ground truth - 원본 JSON 객체에서 가져와서 clean하게 사용
+                    original_output = original_record.get("output", {})
+                    # NaN 값들을 빈 문자열로 정리
+                    clean_ground_truth = {}
+                    for key, value in original_output.items():
+                        if value is None or (isinstance(value, float) and math.isnan(value)):
+                            clean_ground_truth[str(key)] = ""
+                        else:
+                            clean_ground_truth[str(key)] = str(value)
+                    
+                    # 디코딩용 ground truth (기존 방식)
                     labels = sample['labels']
-                    ground_truth = processor.batch_decode([labels], skip_special_tokens=True)[0]
-                    ground_truth = _strip_prompt(ground_truth.strip(), task_prompt)
+                    ground_truth_decoded = processor.batch_decode([labels], skip_special_tokens=True)[0]
+                    ground_truth_decoded = _strip_prompt(ground_truth_decoded.strip(), task_prompt)
                     
                     # Image URL 추출
                     image_url = original_record.get("input", {}).get("image_url", "N/A")
@@ -509,9 +568,9 @@ def main(config_path: str) -> None:
                     sample_predictions.append({
                         "sample_id": i,
                         "image_url": image_url,
-                        "ground_truth": ground_truth,
+                        "ground_truth": clean_ground_truth,  # Clean JSON 객체 사용
                         "prediction": prediction,
-                        "ground_truth_json": _safe_json_loads(ground_truth),
+                        "ground_truth_json": clean_ground_truth,  # 이미 JSON 객체이므로 그대로 사용
                         "prediction_json": _safe_json_loads(prediction)
                     })
                     
