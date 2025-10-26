@@ -31,8 +31,8 @@
     "do_eval": true,
     "do_predict": true,
     "load_best_model_at_end": true,
-    "metric_for_best_model": "eval_loss",
-    "greater_is_better": false,
+    "metric_for_best_model": "exact_match",
+    "greater_is_better": true,
     "gradient_accumulation_steps": 2,
     "dataloader_num_workers": 6,
     "dataloader_pin_memory": true,
@@ -46,13 +46,13 @@
     "run_name": null
   },
   "generation": {
-    "max_length": 128,
-    "num_beams": 1,
+    "max_length": 192,
+    "num_beams": 5,
     "early_stopping": true,
     "do_sample": false,
     "pad_token_id": 1,
     "eos_token_id": 2,
-    "repetition_penalty": 1.1
+    "repetition_penalty": 1.0
   },
   "wandb": {
     "enabled": true,

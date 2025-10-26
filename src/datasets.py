@@ -154,21 +154,27 @@ class DonutJsonlDataset(Dataset):
         if output_payload is None:
             raise ValueError("Record is missing the 'output' field")
 
-        normalised: Dict[str, str] = {}
-        for key, value in output_payload.items():
+        def _normalise_text(value: Any) -> str:
             if value is None or _is_nan(value):
-                normalised[str(key)] = ""
-            else:
-                normalised[str(key)] = str(value)
+                return ""
+            text = str(value).strip()
+            if "\u3000" in text:
+                text = text.replace("\u3000", " ")
+            return text
 
-        # Clean JSON 문자열 직접 생성 (백슬래시 없는 형태)
-        json_parts = []
-        for key, value in normalised.items():
-            # 값에 따옴표가 있으면 escape 처리
-            escaped_value = value.replace('"', '\\"') if '"' in value else value
-            json_parts.append(f'"{key}": "{escaped_value}"')
-        
-        return "{" + ", ".join(json_parts) + "}"
+        # ✅ 고정 순서: brand → material → size
+        key_order = ["brand", "material", "size"]
+        ordered_payload: Dict[str, str] = {
+            k: _normalise_text(output_payload.get(k))
+            for k in key_order
+        }
+
+        return json.dumps(
+            ordered_payload,
+            ensure_ascii=False,
+            sort_keys=False,  # ✅ 고정 순서 유지
+            separators=(",", ":"),
+        )
 
     # ------------------------------------------------------------------
     # public API
