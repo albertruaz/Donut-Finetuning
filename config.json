@@ -4,7 +4,15 @@
   "seed": 42,
   "tokenizer": {
     "task_prompt": "<s_extract_info>",
-    "additional_special_tokens": ["<s_extract_info>"]
+    "additional_special_tokens": [
+      "<s_extract_info>",
+      "<s_brand>",
+      "</s_brand>",
+      "<s_material>",
+      "</s_material>",
+      "<s_size>",
+      "</s_size>"
+    ]
   },
   "data": {
     "train_jsonl": "data/train_dataset.jsonl",
@@ -48,11 +56,11 @@
   "generation": {
     "max_length": 192,
     "num_beams": 5,
+    "repetition_penalty": 1.2,
     "early_stopping": true,
     "do_sample": false,
     "pad_token_id": 1,
-    "eos_token_id": 2,
-    "repetition_penalty": 1.0
+    "eos_token_id": 2
   },
   "wandb": {
     "enabled": true,

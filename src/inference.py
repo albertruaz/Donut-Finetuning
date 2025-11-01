@@ -56,17 +56,29 @@ def run_inference(
         "num_beams": generation_cfg.get("num_beams", 1)
         if generation_cfg
         else 1,
+        "min_new_tokens": generation_cfg.get("min_new_tokens", 1)
+        if generation_cfg
+        else 1,
+        "repetition_penalty": generation_cfg.get("repetition_penalty", 1.0)
+        if generation_cfg
+        else 1.0,
     }
+
+    # 안전: generation_config에만 설정하고, generate() 호출은 심플하게 유지
+    model.generation_config.max_length = gen_config["max_length"]
+    model.generation_config.num_beams = gen_config["num_beams"]
+    model.generation_config.min_new_tokens = gen_config["min_new_tokens"]
+    model.generation_config.repetition_penalty = gen_config["repetition_penalty"]
+    
+    # (옵션) 지원될 때만 설정
+    if hasattr(model.generation_config, "no_repeat_ngram_size"):
+        model.generation_config.no_repeat_ngram_size = 3
+    if hasattr(model.generation_config, "renormalize_logits"):
+        setattr(model.generation_config, "renormalize_logits", True)
 
     generated = model.generate(
         pixel_values=pixel_values,
         decoder_input_ids=prompt_ids,
-        max_length=gen_config["max_length"],
-        num_beams=gen_config["num_beams"],
-        pad_token_id=processor.tokenizer.pad_token_id,
-        eos_token_id=processor.tokenizer.eos_token_id,
-        use_cache=True,
-        early_stopping=True,
         return_dict_in_generate=True,
     )
 

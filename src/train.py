@@ -55,8 +55,8 @@ class EvalSampleLogger:
                     "sample_id": idx,
                     "prediction": pred_text,
                     "ground_truth": label_text,
-                    "prediction_json": _safe_json_loads(pred_text),
-                    "ground_truth_json": _safe_json_loads(label_text),
+                    "prediction_json": _token_string_to_dict(pred_text),
+                    "ground_truth_json": _token_string_to_dict(label_text),
                 }
             )
 
@@ -144,22 +144,34 @@ def _strip_prompt(text: str, prompt: str) -> str:
     return text
 
 
+def _token_string_to_dict(token_string: str) -> Dict[str, str]:
+    """Converts a token-based string back to a dictionary."""
+    data = {}
+    # 정규 표현식을 사용하여 <s_key>value</s_key> 패턴을 찾음
+    import re
+    pattern = re.compile(r"<s_(.*?)>(.*?)</s_(.*?)>")
+    matches = pattern.findall(token_string)
+    for key, value, _ in matches:
+        data[key] = value
+    return data
+
+
 def build_compute_metrics(processor, prompt: str, sample_logger: Optional[EvalSampleLogger] = None):
     pad_token_id = processor.tokenizer.pad_token_id
+
     def compute_metrics(eval_preds):
-        predictions, labels = eval_preds
+        # EvalPrediction 객체 호환성 확보
+        if hasattr(eval_preds, "predictions"):
+            predictions = eval_preds.predictions
+            labels = eval_preds.label_ids
+        else:
+            predictions, labels = eval_preds
+        
         if isinstance(predictions, tuple):
             predictions = predictions[0]
 
-        # DEBUG: 첫 번째 샘플의 원본 토큰 확인
-        print(f"\n[DEBUG] First prediction tokens (before cleaning): {predictions[0][:20]}")
-        print(f"[DEBUG] Prediction shape: {predictions.shape}")
-        
         predictions = np.where(predictions < 0, pad_token_id, predictions)
         labels = np.where(labels == -100, pad_token_id, labels)
-        
-        # DEBUG: 첫 번째 샘플의 정제된 토큰 확인
-        print(f"[DEBUG] First prediction tokens (after cleaning): {predictions[0][:20]}")
 
         decoded_preds = [
             _strip_prompt(text.strip(), prompt)
@@ -176,28 +188,29 @@ def build_compute_metrics(processor, prompt: str, sample_logger: Optional[EvalSa
             print(f"  [{i}] pred: {repr(decoded_preds[i][:100])}")
             print(f"  [{i}] gold: {repr(decoded_labels[i][:100])}")
 
-        pred_objs = [_safe_json_loads(text) for text in decoded_preds]
-        label_objs = [_safe_json_loads(text) for text in decoded_labels]
+        pred_objs = [_token_string_to_dict(text) for text in decoded_preds]
+        label_objs = [_token_string_to_dict(text) for text in decoded_labels]
 
         total = len(pred_objs)
         exact = 0
         field_totals: Dict[str, int] = {}
         field_correct: Dict[str, int] = {}
 
+        all_keys = set()
+        for p, g in zip(pred_objs, label_objs):
+            all_keys.update(p.keys())
+            all_keys.update(g.keys())
+
         for pred, gold in zip(pred_objs, label_objs):
-            if isinstance(pred, dict) and isinstance(gold, dict):
-                if pred == gold:
-                    exact += 1
-                keys = set(pred.keys()) | set(gold.keys())
-                for key in keys:
-                    field_totals[key] = field_totals.get(key, 0) + 1
-                    pred_val = "" if pred.get(key) is None else pred.get(key)
-                    gold_val = "" if gold.get(key) is None else gold.get(key)
-                    if pred_val == gold_val:
-                        field_correct[key] = field_correct.get(key, 0) + 1
-            else:
-                if pred == gold:
-                    exact += 1
+            if pred == gold:
+                exact += 1
+            
+            for key in all_keys:
+                field_totals[key] = field_totals.get(key, 0) + 1
+                pred_val = pred.get(key, "").strip()
+                gold_val = gold.get(key, "").strip()
+                if pred_val == gold_val:
+                    field_correct[key] = field_correct.get(key, 0) + 1
 
         metrics: Dict[str, float] = {
             "exact_match": exact / total if total else 0.0,
@@ -208,6 +221,9 @@ def build_compute_metrics(processor, prompt: str, sample_logger: Optional[EvalSa
                 metrics[f"acc_{key}"] = field_correct.get(key, 0) / divisor
 
         if sample_logger is not None:
+            # 로그 저장 시에는 원래 ground truth 형식(JSON)을 사용
+            # 이 부분은 `DonutJsonlDataset`에서 `original_output`을 제공해야 함
+            # 지금은 단순 텍스트로 저장
             sample_logger.save(decoded_preds, decoded_labels)
         return metrics
 
@@ -267,7 +283,7 @@ def main(config_path: str) -> None:
     logger.info("Seed fixed to %d", seed)
 
     model_name = cfg["model_name"]
-    processor = DonutProcessor.from_pretrained(model_name, use_fast=True)
+    processor = DonutProcessor.from_pretrained(model_name)
     model = VisionEncoderDecoderModel.from_pretrained(model_name)
 
     maybe_add_special_tokens(processor, model, cfg)
@@ -473,7 +489,7 @@ def main(config_path: str) -> None:
     if "eval_strategy" not in training_kwargs:
         if train_cfg.get("eval_strategy", train_cfg.get("evaluation_strategy")) not in (None, "no") and "eval_strategy" in dropped_keys:
             logger.warning(
-                "Current transformers version does not support evaluation strategy configuration; proceeding without periodic evaluation."
+                "Current transformers version does not support eval strategy configuration; proceeding without periodic evaluation."
             )
         if training_kwargs.get("load_best_model_at_end"):
             logger.warning(
@@ -590,11 +606,11 @@ def main(config_path: str) -> None:
             sample_predictions = []
             num_samples = min(50, len(decoded_preds))
             for idx in range(num_samples):
-                record = valid_dataset.records[idx]
+                record = valid_dataset.processed_records[idx]
                 prediction_text = decoded_preds[idx]
                 label_text = decoded_labels[idx]
-                prediction_json = _safe_json_loads(prediction_text)
-                label_json = _safe_json_loads(label_text)
+                prediction_json = _token_string_to_dict(prediction_text)
+                label_json = record.get("original_output", {})
 
                 sample_predictions.append(
                     {
@@ -643,11 +659,11 @@ def main(config_path: str) -> None:
             sample_predictions = []
             num_samples = min(50, len(decoded_preds))
             for idx in range(num_samples):
-                record = test_dataset.records[idx]
+                record = test_dataset.processed_records[idx]
                 prediction_text = decoded_preds[idx]
                 label_text = decoded_labels[idx]
-                prediction_json = _safe_json_loads(prediction_text)
-                label_json = _safe_json_loads(label_text)
+                prediction_json = _token_string_to_dict(prediction_text)
+                label_json = record.get("original_output", {})
 
                 sample_predictions.append(
                     {

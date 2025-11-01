@@ -34,6 +34,18 @@ def _is_nan(value: Any) -> bool:
     return isinstance(value, float) and math.isnan(value)
 
 
+def _gt_to_token_string(data: Dict[str, Any]) -> str:
+    """Converts ground truth dict to a token-based string."""
+    parts = []
+    for key, value in sorted(data.items()):
+        if value is None or _is_nan(value):
+            value = ""
+        # str()로 명시적 변환
+        value_str = str(value).strip()
+        parts.append(f"<s_{key}>{value_str}</s_{key}>")
+    return "".join(parts)
+
+
 class DonutJsonlDataset(Dataset):
     """Dataset wrapping Donut-style JSONL records.
 
@@ -55,7 +67,7 @@ class DonutJsonlDataset(Dataset):
     "output" can contain any mapping of key -> value. Missing values (None / NaN)
     are converted to empty strings before serialisation. The final training target is::
 
-        task_prompt + json.dumps(output_dict, ensure_ascii=False) + eos_token
+        task_prompt + _gt_to_token_string(output_dict) + eos_token
     """
 
     def __init__(
@@ -83,6 +95,19 @@ class DonutJsonlDataset(Dataset):
         self.records = _read_jsonl(jsonl_path)
         if len(self.records) == 0:
             raise ValueError(f"JSONL file {jsonl_path} is empty")
+        
+        # Ground truth를 token string으로 변환하여 캐싱
+        self.processed_records = []
+        for record in self.records:
+            output_data = record.get("output", {})
+            ground_truth = _gt_to_token_string(output_data)
+            self.processed_records.append(
+                {
+                    "input": record.get("input", {}),
+                    "ground_truth_str": ground_truth,
+                    "original_output": output_data, # for validation
+                }
+            )
 
         self.pad_token_id = self.processor.tokenizer.pad_token_id
         if self.pad_token_id is None:
@@ -94,7 +119,7 @@ class DonutJsonlDataset(Dataset):
             self.pad_token_id = self.processor.tokenizer.pad_token_id
 
     def __len__(self) -> int:
-        return len(self.records)
+        return len(self.processed_records)
 
     # ------------------------------------------------------------------
     # private helpers
@@ -150,59 +175,36 @@ class DonutJsonlDataset(Dataset):
                 image = image.rotate(-90 * quarter_turns, expand=True)
         return image
 
-    def _serialise_output(self, output_payload: Dict[str, Any]) -> str:
-        if output_payload is None:
-            raise ValueError("Record is missing the 'output' field")
-
-        def _normalise_text(value: Any) -> str:
-            if value is None or _is_nan(value):
-                return ""
-            text = str(value).strip()
-            if "\u3000" in text:
-                text = text.replace("\u3000", " ")
-            return text
-
-        # ✅ 고정 순서: brand → material → size
-        key_order = ["brand", "material", "size"]
-        ordered_payload: Dict[str, str] = {
-            k: _normalise_text(output_payload.get(k))
-            for k in key_order
-        }
-
-        return json.dumps(
-            ordered_payload,
-            ensure_ascii=False,
-            sort_keys=False,  # ✅ 고정 순서 유지
-            separators=(",", ":"),
-        )
-
     # ------------------------------------------------------------------
     # public API
     # ------------------------------------------------------------------
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        record = self.records[idx]
-        image = self._load_image(record.get("input", {}))
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        record = self.processed_records[idx]
+        input_data = record.get("input", {})
+        image = self._load_image(input_data)
         pixel_values = self.processor(image, return_tensors="pt").pixel_values.squeeze(0)
 
-        target_sequence = self.task_prompt + self._serialise_output(record.get("output", {}))
-        eos_token = self.processor.tokenizer.eos_token
-        if eos_token and not target_sequence.endswith(eos_token):
-            target_sequence += eos_token
-
-        encoding = self.processor.tokenizer(
+        target_sequence = self.task_prompt + record["ground_truth_str"]
+        tokenized = self.processor.tokenizer(
             target_sequence,
-            add_special_tokens=False,
+            add_special_tokens=True,  # EOS is added
             max_length=self.max_target_length,
+            padding="max_length",
             truncation=True,
             return_tensors="pt",
         )
-        labels = encoding.input_ids.squeeze(0)
-        labels = labels.to(torch.long)
-        labels[labels == self.pad_token_id] = -100
+
+        input_ids = tokenized.input_ids.squeeze()
+        attention_mask = tokenized.attention_mask.squeeze()
+
+        # For seq2seq, labels are the same as input_ids, but with padding masked
+        labels = input_ids.clone()
+        labels[labels == self.pad_token_id] = -100  # Mask padding
 
         return {
             "pixel_values": pixel_values,
             "labels": labels,
+            "attention_mask": attention_mask,
         }
 
 
